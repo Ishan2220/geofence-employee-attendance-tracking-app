@@ -1,0 +1,6 @@
+@echo off
+echo Cleaning up node_modules directory...
+rmdir /s /q node_modules
+echo Clearing npm cache...
+npm cache clean --force
+echo Done! 
