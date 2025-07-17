@@ -16,10 +16,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
+import { clearAllEmployeeRecords, clearAttendanceRecords, getStorageSummary } from '../../utils/storageUtils';
+import { useNavigation } from '@react-navigation/native';
 
 const AdminDashboardScreen: React.FC = () => {
   const { theme } = useTheme();
   const { user } = useAuth();
+  const navigation = useNavigation();
   const [departments, setDepartments] = useState<string[]>([]);
   const [selectedDept, setSelectedDept] = useState<string>('All');
   const [employees, setEmployees] = useState<any[]>([]);
@@ -29,6 +32,7 @@ const AdminDashboardScreen: React.FC = () => {
   const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
   const [geoForm, setGeoForm] = useState({ name: '', latitude: '', longitude: '', radius: '' });
   const [savingGeo, setSavingGeo] = useState(false);
+  const [storageSummary, setStorageSummary] = useState<any>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -42,6 +46,15 @@ const AdminDashboardScreen: React.FC = () => {
       setDepartments(['All', ...depts]);
       setEmployees(users.filter((u: any) => u.role === 'employee'));
       setAttendance(attendance);
+      
+      // Get storage summary
+      try {
+        const summary = await getStorageSummary();
+        setStorageSummary(summary);
+      } catch (error) {
+        console.error('Error getting storage summary:', error);
+      }
+      
       setLoading(false);
     };
     fetchData();
@@ -122,6 +135,72 @@ const AdminDashboardScreen: React.FC = () => {
     setSavingGeo(false);
   };
 
+  // Clear all employee records
+  const handleClearAllEmployeeRecords = async () => {
+    Alert.alert(
+      'Clear All Employee Records',
+      'This will permanently delete all employee accounts, attendance records, and location data. This action cannot be undone. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await clearAllEmployeeRecords();
+              // Refresh data after clearing
+              const fetchData = async () => {
+                const usersData = await AsyncStorage.getItem('users');
+                const users = usersData ? JSON.parse(usersData) : [];
+                const attendanceData = await AsyncStorage.getItem('attendanceHistory');
+                const attendance = attendanceData ? JSON.parse(attendanceData) : [];
+                const depts = Array.from(new Set(users.map((u: any) => u.department).filter(Boolean)));
+                setDepartments(['All', ...depts]);
+                setEmployees(users.filter((u: any) => u.role === 'employee'));
+                setAttendance(attendance);
+                
+                const summary = await getStorageSummary();
+                setStorageSummary(summary);
+              };
+              fetchData();
+            } catch (error) {
+              console.error('Error clearing employee records:', error);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Clear only attendance records
+  const handleClearAttendanceRecords = async () => {
+    Alert.alert(
+      'Clear Attendance Records',
+      'This will permanently delete all attendance records and location data, but keep employee accounts. This action cannot be undone. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Attendance',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await clearAttendanceRecords();
+              // Refresh data after clearing
+              const attendanceData = await AsyncStorage.getItem('attendanceHistory');
+              const attendance = attendanceData ? JSON.parse(attendanceData) : [];
+              setAttendance(attendance);
+              
+              const summary = await getStorageSummary();
+              setStorageSummary(summary);
+            } catch (error) {
+              console.error('Error clearing attendance records:', error);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const renderDeptSlicer = () => (
     <View style={[styles.slicerContainer, { backgroundColor: theme.card, borderBottomColor: theme.border }]}> 
       {departments.map(dept => (
@@ -189,14 +268,64 @@ const AdminDashboardScreen: React.FC = () => {
         <Text style={styles.title}>Admin Dashboard</Text>
         <Text style={styles.subtitle}>{user?.name}</Text>
       </View>
-      <TouchableOpacity
-        style={styles.manageGeoBtn}
-        onPress={() => setGeoModalVisible(true)}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="map-outline" size={20} color={theme.primary} style={{ marginRight: 8 }} />
-        <Text style={[styles.manageGeoBtnText, { color: theme.primary }]}>Manage Geofences</Text>
-      </TouchableOpacity>
+      {/* Storage Summary */}
+      {storageSummary && (
+        <View style={[styles.storageSummary, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Text style={[styles.storageTitle, { color: theme.text }]}>Storage Summary</Text>
+          <View style={styles.storageStats}>
+            <View style={styles.storageStat}>
+              <Text style={[styles.storageStatLabel, { color: theme.textSecondary }]}>Total Users</Text>
+              <Text style={[styles.storageStatValue, { color: theme.text }]}>{storageSummary.totalUsers}</Text>
+            </View>
+            <View style={styles.storageStat}>
+              <Text style={[styles.storageStatLabel, { color: theme.textSecondary }]}>Employees</Text>
+              <Text style={[styles.storageStatValue, { color: theme.text }]}>{storageSummary.employeeCount}</Text>
+            </View>
+            <View style={styles.storageStat}>
+              <Text style={[styles.storageStatLabel, { color: theme.textSecondary }]}>Attendance Records</Text>
+              <Text style={[styles.storageStatValue, { color: theme.text }]}>{storageSummary.attendanceRecords}</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Action Buttons */}
+      <View style={styles.actionButtonsContainer}>
+        <TouchableOpacity
+          style={[styles.actionButton, { backgroundColor: '#2563eb' }]}
+          onPress={() => navigation.navigate('ManageAdminRequests')}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="account-check-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+          <Text style={[styles.actionButtonText, { color: '#fff' }]}>Admin Requests</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.actionButton, { backgroundColor: theme.primary }]}
+          onPress={() => setGeoModalVisible(true)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="map-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+          <Text style={[styles.actionButtonText, { color: '#fff' }]}>Manage Geofences</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[styles.actionButton, { backgroundColor: theme.error }]}
+          onPress={handleClearAttendanceRecords}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="trash-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+          <Text style={[styles.actionButtonText, { color: '#fff' }]}>Clear Attendance</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[styles.actionButton, { backgroundColor: '#dc2626' }]}
+          onPress={handleClearAllEmployeeRecords}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="warning-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+          <Text style={[styles.actionButtonText, { color: '#fff' }]}>Clear All Employees</Text>
+        </TouchableOpacity>
+      </View>
       <View style={styles.stickySlicer}>{renderDeptSlicer()}</View>
       <Text style={[styles.sectionTitle, { color: theme.text, marginLeft: 18, marginTop: 10 }]}>Employees</Text>
       <FlatList
@@ -503,6 +632,56 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginTop: 8,
     marginBottom: 2,
+  },
+  // New styles for storage management
+  storageSummary: {
+    margin: 16,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  storageTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+  storageStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  storageStat: {
+    alignItems: 'center',
+  },
+  storageStatLabel: {
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  storageStatValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  actionButtonsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    minWidth: 100,
+    justifyContent: 'center',
+  },
+  actionButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 

@@ -1,15 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
-  Text,
-  TouchableOpacity,
   StyleSheet,
   Alert,
-  ActivityIndicator,
   ScrollView,
   RefreshControl,
   Platform,
-  Modal,
   Dimensions,
   FlatList,
 } from 'react-native';
@@ -19,10 +15,13 @@ import { MaterialIcons, Ionicons, FontAwesome5 } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isWithinGeofence } from '../../utils/geofenceUtils';
 import { useNavigation } from '@react-navigation/core';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { RootStackParamList } from '../../navigation/AppNavigator';
+import CustomMapMarker from '../../components/CustomMapMarker';
+import { Text, Button, Card, Snackbar, ActivityIndicator, Avatar, FAB, Divider, useTheme as usePaperTheme } from 'react-native-paper';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -240,6 +239,10 @@ const HomeScreen = () => {
   
   // Admin specific state
   const [selectedEmployee, setSelectedEmployee] = useState<any | null>(null);
+  const [userGeofences, setUserGeofences] = useState<any[]>([]);
+  const [snackbar, setSnackbar] = useState({ visible: false, message: '', error: false });
+  const [checkinDebug, setCheckinDebug] = useState('');
+  const [dailyAttendanceCompleted, setDailyAttendanceCompleted] = useState(false);
 
   // Define the geofence boundary for the office
   const geofence = user && user.assignedLocation ? {
@@ -250,6 +253,7 @@ const HomeScreen = () => {
   } : null;
 
   useEffect(() => {
+    let locationSubscription: Location.LocationSubscription | null = null;
     const initializeScreen = async () => {
       setLoading(true);
       
@@ -383,43 +387,96 @@ const HomeScreen = () => {
         }
       }
 
+      // Load geofences for employee
+      if (user && user.role === 'employee') {
+        try {
+          const geofenceData = await AsyncStorage.getItem('geofences_' + user.id);
+          setUserGeofences(geofenceData ? JSON.parse(geofenceData) : []);
+        } catch (e) {
+          setUserGeofences([]);
+        }
+        // Start watching location
+        locationSubscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 5 },
+          async (loc) => {
+            setLocation(loc);
+            // Check if inside any geofence
+            const insideAny = (userGeofences || []).some(geo =>
+              isWithinGeofence(
+                loc.coords.latitude,
+                loc.coords.longitude,
+                geo
+              )
+            );
+            setLocationStatus(insideAny ? 'inside' : 'outside');
+            // If checked in and now outside all geofences, auto check-out
+            if (attendanceStatus && !insideAny) {
+              // Auto check-out logic
+              try {
+                const today = new Date().toISOString().split('T')[0];
+                const attendanceKey = `attendance_${user.email}_${today}`;
+                const attendanceData = await AsyncStorage.getItem(attendanceKey);
+                if (attendanceData) {
+                  const storedData = JSON.parse(attendanceData);
+                  const currentTime = new Date().toISOString();
+                  const totalHours = calculateHours(storedData.checkInTime, currentTime);
+                  const updatedData = {
+                    ...storedData,
+                    checkOutTime: currentTime,
+                    checkOutLocation: {
+                      latitude: loc.coords.latitude,
+                      longitude: loc.coords.longitude,
+                    },
+                    totalHours,
+                  };
+                  await AsyncStorage.setItem(attendanceKey, JSON.stringify(updatedData));
+                  setAttendanceStatus(false);
+                  setDailyAttendanceCompleted(true); // Mark as completed on auto check-out
+                  setSnackbar({ visible: true, message: 'You have been automatically checked out for leaving the geofence.', error: false });
+                }
+              } catch (e) {
+                setSnackbar({ visible: true, message: 'Auto check-out failed.', error: true });
+              }
+            }
+          }
+        );
+      }
       setLoading(false);
     };
-
     initializeScreen();
-    // Only run this effect once on component mount
+    // Cleanup watcher on unmount
+    return () => {
+      if (locationSubscription) {
+        locationSubscription.remove();
+      }
+    };
   }, []);
 
-  // Function to check if the user is inside the geofence
+  // Function to check if the user is inside any geofence (for updateLocationStatus)
   const updateLocationStatus = async (locationObj: Location.LocationObject) => {
-    if (!geofence) {
+    if (!userGeofences.length) {
       setLocationStatus('unknown');
       return;
     }
-
-    const distance = calculateDistance(
-      locationObj.coords.latitude,
-      locationObj.coords.longitude,
-      geofence.latitude,
-      geofence.longitude
+    const insideAny = userGeofences.some(geo =>
+      isWithinGeofence(
+        locationObj.coords.latitude,
+        locationObj.coords.longitude,
+        geo
+      )
     );
-
-    const isInside = distance <= (geofence.radius / 1000); // Convert radius to km
-    setLocationStatus(isInside ? 'inside' : 'outside');
-
+    setLocationStatus(insideAny ? 'inside' : 'outside');
     // Save employee location to AsyncStorage for admin's map
     if (user && user.role === 'employee') {
       try {
         const locationsJSON = await AsyncStorage.getItem('employeeLocations');
         const locationsMap = locationsJSON ? JSON.parse(locationsJSON) : {};
-        
         locationsMap[user.email] = {
           latitude: locationObj.coords.latitude,
           longitude: locationObj.coords.longitude,
           timestamp: new Date().toISOString(),
-          isInside,
+          isInside: insideAny,
         };
-        
         await AsyncStorage.setItem('employeeLocations', JSON.stringify(locationsMap));
       } catch (error) {
         console.error('Error saving employee location:', error);
@@ -450,17 +507,33 @@ const HomeScreen = () => {
     if (!user) return;
     
     try {
-      const attendanceKey = `attendance_${user.email}_${new Date().toISOString().split('T')[0]}`;
+      const today = new Date().toISOString().split('T')[0];
+      const attendanceKey = `attendance_${user.email}_${today}`;
       const attendanceData = await AsyncStorage.getItem(attendanceKey);
       
       if (attendanceData) {
         const data = JSON.parse(attendanceData);
-        setAttendanceStatus(data.checkOutTime ? false : true);
+        // Check if they have checked in today (regardless of checkout status)
+        if (data.checkInTime) {
+          setAttendanceStatus(true);
+          // Check if they have also checked out today
+          if (data.checkOutTime) {
+            setDailyAttendanceCompleted(true);
+          } else {
+            setDailyAttendanceCompleted(false);
+          }
+        } else {
+          setAttendanceStatus(false);
+          setDailyAttendanceCompleted(false);
+        }
       } else {
         setAttendanceStatus(false);
+        setDailyAttendanceCompleted(false);
       }
     } catch (error) {
       console.error('Error getting attendance status:', error);
+      setAttendanceStatus(false);
+      setDailyAttendanceCompleted(false);
     }
   };
 
@@ -468,52 +541,92 @@ const HomeScreen = () => {
   const handleAttendance = async () => {
     if (!user) return;
     
-    // Only allow check-in/out if we have a geofence and are inside it
-    if (!geofence) {
-      Alert.alert('Error', 'You have no assigned location. Please contact your administrator.');
-      return;
-    }
-
-    if (locationStatus !== 'inside') {
-      Alert.alert('Error', 'You must be inside your assigned location to check in or out.');
-      return;
-    }
+    // Check if already checked in today
+    const today = new Date().toISOString().split('T')[0];
+    const attendanceKey = `attendance_${user.email}_${today}`;
+    const existingAttendanceData = await AsyncStorage.getItem(attendanceKey);
     
-    setFetchingLocation(true);
-    
-    try {
-      // Get the most current location
-      const currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      updateLocationStatus(currentLocation);
-      
-      // Check if the user is still inside the geofence with the new location
-      const distance = calculateDistance(
-        currentLocation.coords.latitude,
-        currentLocation.coords.longitude,
-        geofence.latitude,
-        geofence.longitude
-      );
-      
-      const isInside = distance <= (geofence.radius / 1000);
-      
-      if (!isInside) {
-        Alert.alert('Error', 'You must be inside your assigned location to check in or out.');
-        setFetchingLocation(false);
+    if (existingAttendanceData) {
+      const existingData = JSON.parse(existingAttendanceData);
+      if (existingData.checkInTime && !existingData.checkOutTime) {
+        // Already checked in today and not checked out - allow checkout
+        // This is the checkout flow
+      } else if (existingData.checkInTime && existingData.checkOutTime) {
+        // Already checked in and out today - prevent multiple check-ins
+        Alert.alert(
+          'Already Checked In Today', 
+          'You have already checked in and out today. You can only check in once per day.'
+        );
         return;
       }
-
-      const today = new Date().toISOString().split('T')[0];
-      const attendanceKey = `attendance_${user.email}_${today}`;
+    }
+    
+    // Load all geofences for this user
+    let userGeofences = [];
+    try {
+      const geofenceData = await AsyncStorage.getItem('geofences_' + user.id);
+      userGeofences = geofenceData ? JSON.parse(geofenceData) : [];
+    } catch (e) {
+      userGeofences = [];
+    }
+    if (!userGeofences.length) {
+      Alert.alert('Error', 'You have no assigned geofences. Please contact your administrator.');
+      return;
+    }
+    // Get the most current location
+    setFetchingLocation(true);
+    let currentLocation;
+    try {
+      currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    } catch (e) {
+      setFetchingLocation(false);
+      Alert.alert('Error', 'Could not get your current location.');
+      return;
+    }
+    // Check if inside any geofence (meters)
+    const insideAny = userGeofences.some(geo =>
+      isWithinGeofence(
+        currentLocation.coords.latitude,
+        currentLocation.coords.longitude,
+        geo
+      )
+    );
+    if (!insideAny) {
+      // Debug output
+      const debugInfo = userGeofences.map((geo, idx) => {
+        const lat = parseFloat(geo.latitude);
+        const lng = parseFloat(geo.longitude);
+        const rad = parseFloat(geo.radius);
+        const userLat = currentLocation.coords.latitude;
+        const userLng = currentLocation.coords.longitude;
+        const toRad = (value: number) => (value * Math.PI) / 180;
+        const R = 6371000;
+        const lat1 = toRad(userLat);
+        const lat2 = toRad(lat);
+        const deltaLat = toRad(lat - userLat);
+        const deltaLng = toRad(lng - userLng);
+        const a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+        return `Geofence ${idx + 1}: Center=(${lat},${lng}), Radius=${rad}m, Your Location=(${userLat},${userLng}), Distance=${distance.toFixed(2)}m`;
+      }).join('\n');
+      Alert.alert('Error', `You must be within your assigned geofence to check in or out.\n\nDebug Info:\n${debugInfo}`);
+      setFetchingLocation(false);
+      return;
+    }
+    try {
+      // Update location status (optional)
+      updateLocationStatus(currentLocation);
+      // Proceed with check-in/out logic
       const currentTime = new Date().toISOString();
       const formattedTime = new Date(currentTime).toLocaleTimeString([], { 
         hour: '2-digit', 
         minute: '2-digit' 
       });
-      
       const attendanceData = await AsyncStorage.getItem(attendanceKey);
       
-      if (!attendanceData || attendanceStatus === false) {
-        // Check in
+      if (!attendanceData) {
+        // First check-in of the day
         const checkInData = {
           date: today,
           email: user.email,
@@ -525,20 +638,20 @@ const HomeScreen = () => {
             longitude: currentLocation.coords.longitude,
           },
         };
-        
-        // Update the state immediately for better UX
         setAttendanceStatus(true);
-        
-        // Save to AsyncStorage
         await AsyncStorage.setItem(attendanceKey, JSON.stringify(checkInData));
-        
-        // Show success message with current time
         Alert.alert('Success', `You have successfully checked in at ${formattedTime}.`);
       } else {
-        // Check out
+        // Check out (already checked in today)
         const storedData = JSON.parse(attendanceData);
+        if (storedData.checkOutTime) {
+          Alert.alert(
+            'Already Checked Out', 
+            'You have already checked in and out today. You can only check in once per day.'
+          );
+          return;
+        }
         const totalHours = calculateHours(storedData.checkInTime, currentTime);
-        
         const updatedData = {
           ...storedData,
           checkOutTime: currentTime,
@@ -548,14 +661,9 @@ const HomeScreen = () => {
           },
           totalHours,
         };
-        
-        // Update the state immediately for better UX
         setAttendanceStatus(false);
-        
-        // Save to AsyncStorage
         await AsyncStorage.setItem(attendanceKey, JSON.stringify(updatedData));
-        
-        // Show success message with hours worked
+        setDailyAttendanceCompleted(true);
         Alert.alert(
           'Success', 
           `You have successfully checked out at ${formattedTime}.\nTotal hours worked: ${totalHours} hours`
@@ -565,9 +673,134 @@ const HomeScreen = () => {
       console.error('Error handling attendance:', error);
       Alert.alert('Error', 'Failed to process your attendance.');
     }
-    
     setFetchingLocation(false);
   };
+
+  // Manual checkout function (doesn't require geofence check)
+  const handleManualCheckout = async () => {
+    if (!user) return;
+    
+    Alert.alert(
+      'Manual Checkout',
+      'Are you sure you want to check out manually? This will record your current location.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Check Out',
+          style: 'destructive',
+          onPress: async () => {
+            setFetchingLocation(true);
+            try {
+              let currentLocation;
+              try {
+                currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+              } catch (e) {
+                // If location is not available, use a default location or proceed without location
+                currentLocation = null;
+              }
+              
+              const today = new Date().toISOString().split('T')[0];
+              const attendanceKey = `attendance_${user.email}_${today}`;
+              const currentTime = new Date().toISOString();
+              const formattedTime = new Date(currentTime).toLocaleTimeString([], { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              });
+              
+              const attendanceData = await AsyncStorage.getItem(attendanceKey);
+              if (attendanceData) {
+                const storedData = JSON.parse(attendanceData);
+                const totalHours = calculateHours(storedData.checkInTime, currentTime);
+                const updatedData = {
+                  ...storedData,
+                  checkOutTime: currentTime,
+                  checkOutLocation: currentLocation ? {
+                    latitude: currentLocation.coords.latitude,
+                    longitude: currentLocation.coords.longitude,
+                  } : null,
+                  totalHours,
+                  manualCheckout: true,
+                };
+                setAttendanceStatus(false);
+                await AsyncStorage.setItem(attendanceKey, JSON.stringify(updatedData));
+                setDailyAttendanceCompleted(true);
+                Alert.alert(
+                  'Manual Checkout Complete', 
+                  `You have been checked out at ${formattedTime}.\nTotal hours worked: ${totalHours} hours\n\nNote: This was a manual checkout.`
+                );
+              } else {
+                Alert.alert('Error', 'No check-in record found for today.');
+              }
+            } catch (error) {
+              console.error('Error during manual checkout:', error);
+              Alert.alert('Error', 'Failed to process manual checkout.');
+            }
+            setFetchingLocation(false);
+          }
+        }
+      ]
+    );
+  };
+
+  // Auto checkout when location is disabled
+  const handleLocationPermissionChange = async () => {
+    if (!user || !attendanceStatus) return;
+    
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        // Location permission was revoked, auto checkout
+        const today = new Date().toISOString().split('T')[0];
+        const attendanceKey = `attendance_${user.email}_${today}`;
+        const currentTime = new Date().toISOString();
+        const formattedTime = new Date(currentTime).toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+        
+        const attendanceData = await AsyncStorage.getItem(attendanceKey);
+        if (attendanceData) {
+          const storedData = JSON.parse(attendanceData);
+          const totalHours = calculateHours(storedData.checkInTime, currentTime);
+          const updatedData = {
+            ...storedData,
+            checkOutTime: currentTime,
+            checkOutLocation: null,
+            totalHours,
+            autoCheckout: true,
+            autoCheckoutReason: 'Location permission revoked',
+          };
+          setAttendanceStatus(false);
+          await AsyncStorage.setItem(attendanceKey, JSON.stringify(updatedData));
+          setDailyAttendanceCompleted(true);
+          
+          setSnackbar({
+            visible: true,
+            message: `Auto checkout at ${formattedTime} - Location disabled`,
+            error: false
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error checking location permission:', error);
+    }
+  };
+
+  // Monitor location permission changes
+  useEffect(() => {
+    let permissionCheckInterval: NodeJS.Timeout;
+    
+    if (attendanceStatus) {
+      // Check location permission every 30 seconds when checked in
+      permissionCheckInterval = setInterval(handleLocationPermissionChange, 30000);
+    }
+    
+    return () => {
+      if (permissionCheckInterval) {
+        clearInterval(permissionCheckInterval);
+      }
+    };
+  }, [attendanceStatus, user]);
 
   const calculateHours = (startTime: string, endTime: string) => {
     const start = new Date(startTime).getTime();
@@ -652,356 +885,253 @@ const HomeScreen = () => {
   // Render admin view
   if (user?.role === 'admin') {
     return (
-      <View style={[styles.container, { backgroundColor: theme.background }]}>
-        <LinearGradient
-          colors={isDark ? ['#2563eb', '#1e40af'] : ['#3B82F6', '#1d4ed8']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 0, y: 1 }}
-          style={styles.header}
-        >
-          <Text style={styles.headerText}>Admin Dashboard</Text>
-        </LinearGradient>
-
-        <View style={[styles.mapContainer, { 
-          shadowColor: theme.text,
-          backgroundColor: theme.card
-        }]}>
-          <MapView
-            provider={PROVIDER_GOOGLE}
-            style={styles.map}
-            initialRegion={getInitialRegion()}
-            showsUserLocation={true}
-            showsMyLocationButton={true}
-            showsCompass={true}
-            customMapStyle={isDark ? mapStyleDark : mapStyleLight}
-            onMapReady={() => setMapReady(true)}
-            loadingEnabled={true}
-            loadingIndicatorColor={theme.primary}
-            loadingBackgroundColor={theme.background}
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        {/* Dashboard Header Card */}
+        <Card style={{ borderRadius: 24, margin: 16, marginBottom: 0, elevation: 6, overflow: 'hidden', backgroundColor: theme.primary }}>
+          <LinearGradient
+            colors={isDark ? ['#2563eb', '#1e40af'] : ['#3B82F6', '#1d4ed8']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ flexDirection: 'row', alignItems: 'center', padding: 24, borderRadius: 24 }}
           >
-            {/* Render markers for each employee's last known location */}
-            {mapReady && employeeLocations.map((emp, index) => (
-              <Marker
-                key={`emp-${index}`}
-                coordinate={{
-                  latitude: parseFloat(emp.latitude),
-                  longitude: parseFloat(emp.longitude),
-                }}
-                title={emp.name || emp.email}
-                description={`${emp.department || 'Unknown'} - ${emp.isInside ? 'Inside office' : 'Outside office'}`}
-                onPress={() => setSelectedEmployee(emp)}
-              >
-                <View style={[
-                  styles.personMarker,
-                  { backgroundColor: isDark ? 'rgba(30, 41, 59, 0.9)' : 'rgba(255, 255, 255, 0.9)' }
-                ]}>
-                  <FontAwesome5 
-                    name="user-alt" 
-                    size={18} 
-                    color={emp.isInside ? theme.statusCheckedIn : theme.statusCheckedOut} 
-                  />
-                </View>
-                <Callout tooltip>
-                  <View style={[styles.calloutView, { backgroundColor: theme.card }]}>
-                    <Text style={[styles.calloutTitle, { color: theme.text }]}>{emp.name || emp.email}</Text>
-                    <Text style={[styles.calloutSubtitle, { color: theme.textSecondary }]}>{emp.department || 'Unknown Department'}</Text>
-                    <View style={styles.calloutStatusRow}>
-                      <View style={[
-                        styles.calloutStatusDot, 
-                        { backgroundColor: emp.isInside ? theme.statusCheckedIn : theme.statusCheckedOut }
-                      ]} />
-                      <Text style={[styles.calloutStatus, { color: theme.text }]}>
-                        {emp.isInside ? 'Inside office' : 'Outside office'}
-                      </Text>
-                    </View>
-                  </View>
-                </Callout>
-              </Marker>
-            ))}
-
-            {/* Render circles for each employee's assigned location (office) */}
-            {mapReady && employeeLocations.map((emp, index) => {
-              if (emp.assignedLocation) {
-                return (
-                  <Circle
-                    key={`circle-${index}`}
-                    center={{
-                      latitude: parseFloat(emp.assignedLocation.latitude),
-                      longitude: parseFloat(emp.assignedLocation.longitude),
-                    }}
-                    radius={parseFloat(emp.assignedLocation.radius) || 100}
-                    strokeWidth={1.5}
-                    strokeColor={theme.primary}
-                    fillColor={isDark ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.15)'}
-                  />
-                );
-              }
-              return null;
-            })}
-          </MapView>
-        </View>
-
-        {/* Add Manage Geofences Button */}
-        <TouchableOpacity 
-          style={[
-            styles.manageGeofencesButton,
-            {
-              backgroundColor: theme.primary,
-              shadowColor: theme.text
-            }
-          ]}
-          onPress={() => navigation.navigate('Profile')}
-        >
-          <View style={styles.manageGeofencesButtonContent}>
-            <Ionicons name="location-outline" size={20} color="#fff" />
-            <Text style={styles.manageGeofencesButtonText}>Manage Geofences</Text>
-          </View>
-        </TouchableOpacity>
-
-        {selectedEmployee && (
-          <View style={[
-            styles.employeeInfoCard,
-            {
-              backgroundColor: theme.card,
-              shadowColor: theme.text
-            }
-          ]}>
-            <TouchableOpacity 
-              style={styles.closeButton}
-              onPress={() => setSelectedEmployee(null)}
-            >
-              <Ionicons name="close" size={24} color={theme.textSecondary} />
-            </TouchableOpacity>
-            <Text style={[styles.empName, { color: theme.text }]}>{selectedEmployee.name}</Text>
-            <Text style={[styles.empDepartment, { color: theme.textSecondary }]}>{selectedEmployee.department}</Text>
-            <View style={styles.statusIndicatorRow}>
-              <View style={[
-                styles.statusIndicator, 
-                { 
-                  backgroundColor: selectedEmployee.isInside 
-                    ? theme.statusCheckedIn 
-                    : theme.statusCheckedOut 
-                }
-              ]} />
-              <Text style={[styles.empStatus, { color: theme.text }]}>
-                {selectedEmployee.isInside ? 'Inside assigned location' : 'Outside assigned location'}
-              </Text>
+            <Avatar.Icon icon="view-dashboard-outline" size={48} style={{ backgroundColor: theme.card, marginRight: 18 }} color={theme.primary} />
+            <View>
+              <Text style={{ color: theme.text, fontWeight: 'bold', fontSize: 22, marginBottom: 2 }}>Admin Dashboard</Text>
+              <Text style={{ color: '#fff', opacity: 0.85, fontSize: 15 }}>Welcome back! Here’s your overview.</Text>
             </View>
-            <Text style={[styles.lastUpdated, { color: theme.textSecondary }]}>
-              Last updated: {new Date(selectedEmployee.timestamp).toLocaleTimeString()}
-            </Text>
-          </View>
-        )}
-
-        <TouchableOpacity 
-          style={[
-            styles.refreshButton,
-            { backgroundColor: theme.primary, shadowColor: theme.text }
-          ]}
-          onPress={refreshLocation}
-          disabled={fetchingLocation}
+          </LinearGradient>
+        </Card>
+        <ScrollView
+          contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 120 }}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={fetchingLocation}
+              onRefresh={refreshLocation}
+              colors={[theme.primary]}
+              tintColor={theme.primary}
+              progressBackgroundColor={theme.card}
+            />
+          }
         >
-          {fetchingLocation ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="refresh" size={24} color="#fff" />
-          )}
-        </TouchableOpacity>
+          {/* Map Card - show employees only */}
+          <Card style={{ borderRadius: 18, marginBottom: 18, overflow: 'hidden', elevation: 4 }}>
+            <View style={{ height: 400, width: '100%' }}>
+              <MapView
+                provider={PROVIDER_GOOGLE}
+                style={StyleSheet.absoluteFillObject}
+                initialRegion={getInitialRegion()}
+                customMapStyle={isDark ? mapStyleDark : mapStyleLight}
+                onMapReady={() => setMapReady(true)}
+                loadingEnabled={true}
+                loadingIndicatorColor={theme.primary}
+                loadingBackgroundColor={theme.background}
+              >
+                {/* Optionally show employee markers here */}
+                {mapReady && employeeLocations.map((emp, idx) => (
+                  <Marker
+                    key={emp.email}
+                    coordinate={{ latitude: emp.latitude, longitude: emp.longitude }}
+                    title={emp.name}
+                    description={emp.department}
+                  >
+                    <View style={{ backgroundColor: theme.primary, borderRadius: 16, width: 32, height: 32, justifyContent: 'center', alignItems: 'center' }}>
+                      <Ionicons name="person" size={16} color={theme.card} />
+                    </View>
+                  </Marker>
+                ))}
+              </MapView>
+            </View>
+          </Card>
+          {/* You can add more admin-specific cards or stats here if needed */}
+        </ScrollView>
+        {/* Floating refresh FAB */}
+        <FAB
+          icon="refresh"
+          onPress={refreshLocation}
+          loading={fetchingLocation}
+          style={styles.fab}
+          color={theme.card}
+          accessibilityLabel="Refresh Location"
+        />
       </View>
     );
   }
 
   // Render employee view
-  return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <LinearGradient
-        colors={isDark ? ['#2563eb', '#1e40af'] : ['#3B82F6', '#1d4ed8']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={styles.header}
-      >
-        <Text style={styles.headerText}>Attendance Dashboard</Text>
-      </LinearGradient>
+  if (user?.role !== 'admin') {
+    const insideAnyGeofence = (userGeofences || []).some(geo =>
+      location && isWithinGeofence(
+        location.coords.latitude,
+        location.coords.longitude,
+        geo
+      )
+    );
+    // Debug reason for check-in button state
+    let checkinReason = '';
+    if (!userGeofences.length) checkinReason = 'No geofence assigned.';
+    else if (!location) checkinReason = 'Location not available.';
+    else if (attendanceStatus) checkinReason = 'Already checked in.';
+    else if (dailyAttendanceCompleted) checkinReason = 'Daily attendance completed.';
+    else if (!insideAnyGeofence) checkinReason = 'Not inside any geofence.';
+    else checkinReason = '';
 
-      <ScrollView 
-        style={styles.scrollContent}
-        contentContainerStyle={[
-          styles.scrollContentContainer,
-          { backgroundColor: theme.background }
-        ]}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={fetchingLocation}
-            onRefresh={refreshLocation}
-            colors={[theme.primary]}
-            tintColor={theme.primary}
-            progressBackgroundColor={theme.card}
-          />
-        }
-      >
-        <View style={[
-          styles.mapContainer, 
-          { 
-            shadowColor: theme.text,
-            backgroundColor: theme.card
-          }
-        ]}>
-          <MapView
-            provider={PROVIDER_GOOGLE}
-            style={styles.map}
-            initialRegion={getInitialRegion()}
-            showsUserLocation={true}
-            showsMyLocationButton={true}
-            showsCompass={true}
-            customMapStyle={isDark ? mapStyleDark : mapStyleLight}
-            onMapReady={() => setMapReady(true)}
-            loadingEnabled={true}
-            loadingIndicatorColor={theme.primary}
-            loadingBackgroundColor={theme.background}
-          >
-            {/* Only render the geofence if it exists */}
-            {mapReady && geofence && (
-              <>
-                <Marker
-                  coordinate={{
-                    latitude: geofence.latitude,
-                    longitude: geofence.longitude,
-                  }}
-                  title={geofence.name}
-                  description="Your assigned location"
-                >
-                  <View style={[
-                    styles.officeMarker,
-                    { 
-                      backgroundColor: isDark ? 'rgba(30, 41, 59, 0.9)' : 'rgba(255, 255, 255, 0.9)',
-                      borderColor: theme.primary,
-                      shadowColor: theme.text
-                    }
-                  ]}>
-                    <MaterialIcons name="location-on" size={22} color={theme.primary} />
-                  </View>
-                  <Callout tooltip>
-                    <View style={[styles.calloutView, { backgroundColor: theme.card }]}>
-                      <Text style={[styles.calloutTitle, { color: theme.text }]}>{geofence.name}</Text>
-                      <Text style={[styles.calloutSubtitle, { color: theme.textSecondary }]}>Your assigned location</Text>
-                      <Text style={[styles.calloutRadius, { color: theme.text }]}>
-                        Radius: {geofence.radius}m
-                      </Text>
-                    </View>
-                  </Callout>
-                </Marker>
-                <Circle
-                  center={{
-                    latitude: geofence.latitude,
-                    longitude: geofence.longitude,
-                  }}
-                  radius={geofence.radius}
-                  strokeWidth={1.5}
-                  strokeColor={theme.primary}
-                  fillColor={isDark ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.15)'}
-                />
-              </>
-            )}
-          </MapView>
-        </View>
-
-        {/* Move check-in/out button here - outside of the cards for more prominence */}
-        {geofence && (
-          <TouchableOpacity
-            style={[
-              styles.prominentAttendanceButton,
-              attendanceStatus ? styles.checkOutButton : styles.checkInButton,
-              fetchingLocation ? styles.disabledButton : {},
-              locationStatus !== 'inside' ? styles.disabledButton : {},
-              { shadowColor: theme.text }
-            ]}
-            onPress={handleAttendance}
-            disabled={fetchingLocation || locationStatus !== 'inside'}
-          >
-            {fetchingLocation ? (
-              <ActivityIndicator color="#fff" size="small" />
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        {/* Gradient Header */}
+        <LinearGradient
+          colors={[theme.primary, theme.primaryLight]}
+          style={{ paddingTop: 70, paddingBottom: 36, alignItems: 'center', borderBottomLeftRadius: 32, borderBottomRightRadius: 32, marginBottom: 8 }}
+        >
+          <Avatar.Icon size={64} icon="map-marker-radius" color={theme.card} style={{ backgroundColor: theme.primary, marginBottom: 10 }} />
+          <Text style={{ color: theme.text, fontWeight: 'bold', fontSize: 24, marginBottom: 2 }}>Welcome, {user?.name}</Text>
+          <Text style={{ color: theme.textSecondary, opacity: 0.8, marginBottom: 2 }}>{user?.email}</Text>
+        </LinearGradient>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 18 }}>
+          {/* Map Card */}
+          <Card style={{ borderRadius: 18, marginBottom: 18, overflow: 'hidden', elevation: 4 }}>
+            <View style={{ height: 220, width: '100%' }}>
+              <MapView
+                provider={PROVIDER_GOOGLE}
+                style={StyleSheet.absoluteFillObject}
+                initialRegion={getInitialRegion()}
+                showsUserLocation={true}
+                showsMyLocationButton={true}
+                showsCompass={true}
+                customMapStyle={isDark ? mapStyleDark : mapStyleLight}
+                onMapReady={() => setMapReady(true)}
+                loadingEnabled={true}
+                loadingIndicatorColor={theme.primary}
+                loadingBackgroundColor={theme.background}
+              >
+                {mapReady && userGeofences && userGeofences.map((geo, idx) => (
+                  <Circle
+                    key={idx}
+                    center={{
+                      latitude: parseFloat(geo.latitude),
+                      longitude: parseFloat(geo.longitude),
+                    }}
+                    radius={parseFloat(geo.radius)}
+                    strokeWidth={2}
+                    strokeColor={theme.primary}
+                    fillColor={isDark ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.15)'}
+                  />
+                ))}
+              </MapView>
+            </View>
+          </Card>
+          {/* Geofence Info Card */}
+          <Card style={{ borderRadius: 16, marginBottom: 16, padding: 18, elevation: 3 }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 17, color: theme.primary, marginBottom: 6 }}>Assigned Geofences</Text>
+            {userGeofences.length === 0 ? (
+              <Text style={{ color: theme.error }}>No geofence assigned. Contact your administrator.</Text>
             ) : (
-              <>
-                <Ionicons 
-                  name={attendanceStatus ? "log-out-outline" : "log-in-outline"} 
-                  size={24} 
-                  color="#fff" 
-                />
-                <Text style={styles.prominentButtonText}>
-                  {attendanceStatus ? 'CHECK OUT' : 'CHECK IN'}
+              userGeofences.map((geo, idx) => (
+                <Text key={idx} style={{ color: theme.text, marginBottom: 2 }}>
+                  • Lat: {geo.latitude}, Lng: {geo.longitude}, Radius: {geo.radius}m
                 </Text>
-              </>
+              ))
             )}
-          </TouchableOpacity>
-        )}
-
-        <View style={styles.infoCards}>
-          <View style={[
-            styles.card, 
-            { 
-              backgroundColor: theme.card,
-              shadowColor: theme.text
-            }
-          ]}>
-            <Text style={[styles.cardTitle, { color: theme.text }]}>Your Location Status</Text>
-            <View style={styles.locationStatusContainer}>
-              <View 
-                style={[
-                  styles.statusIndicator, 
-                  locationStatus === 'inside' ? { backgroundColor: theme.statusCheckedIn } : 
-                  locationStatus === 'outside' ? { backgroundColor: theme.statusCheckedOut } : 
-                  { backgroundColor: theme.statusOutside }
-                ]} 
-              />
-              <Text style={[styles.locationStatusText, { color: theme.text }]}>
-                {locationStatus === 'inside' ? 'Inside Office' : 
-                 locationStatus === 'outside' ? 'Outside Office' : 
-                 'Unknown Location'}
+          </Card>
+          {/* Location Status Card */}
+          <Card style={{ borderRadius: 16, marginBottom: 16, padding: 18, elevation: 3 }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 17, color: theme.primary, marginBottom: 6 }}>Your Location Status</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+              <View style={{ width: 14, height: 14, borderRadius: 7, marginRight: 10, backgroundColor: locationStatus === 'inside' ? theme.success : locationStatus === 'outside' ? theme.error : theme.statusOutside }} />
+              <Text style={{ color: theme.text, fontSize: 16 }}>
+                {locationStatus === 'inside' ? 'Inside Geofence' : locationStatus === 'outside' ? 'Outside Geofence' : 'Unknown Location'}
               </Text>
             </View>
-            {geofence ? (
-              <Text style={[styles.geofenceInfo, { color: theme.textSecondary }]}>
-                Assigned to: {geofence.name}
-              </Text>
-            ) : (
-              <Text style={[styles.geofenceWarning, { color: theme.error }]}>
-                No location assigned. Contact your administrator.
-              </Text>
-            )}
-          </View>
-
-          <View style={[
-            styles.card, 
-            { 
-              backgroundColor: theme.card,
-              shadowColor: theme.text
-            }
-          ]}>
-            <Text style={[styles.cardTitle, { color: theme.text }]}>Your Attendance Status</Text>
-            <View style={styles.attendanceStatusContainer}>
-              <View style={[
-                styles.statusIndicator, 
-                { backgroundColor: attendanceStatus ? theme.statusCheckedIn : theme.statusCheckedOut }
-              ]} />
-              <Text style={[styles.attendanceStatusText, { color: theme.text }]}>
+          </Card>
+          {/* Attendance Status Card */}
+          <Card style={{ borderRadius: 16, marginBottom: 16, padding: 18, elevation: 3 }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 17, color: theme.primary, marginBottom: 6 }}>Your Attendance Status</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+              <View style={{ width: 14, height: 14, borderRadius: 7, marginRight: 10, backgroundColor: attendanceStatus ? theme.success : theme.error }} />
+              <Text style={{ color: theme.text, fontSize: 16 }}>
                 {attendanceStatus ? 'Checked In' : 'Checked Out'}
               </Text>
             </View>
-
-            {/* Remove the button from here as we moved it up */}
-            {!geofence && (
-              <View style={[styles.noActionContainer, { backgroundColor: isDark ? '#2d3748' : '#eee' }]}>
-                <Text style={[styles.noActionText, { color: theme.textSecondary }]}>
-                  Attendance actions unavailable without assigned location
+          </Card>
+          {/* Check-in button only if inside geofence and not checked in and not completed today */}
+          {insideAnyGeofence && !attendanceStatus && !dailyAttendanceCompleted && (
+            <Button
+              mode="contained"
+              onPress={handleAttendance}
+              disabled={fetchingLocation}
+              style={{ marginHorizontal: 30, marginTop: 8, marginBottom: 32, borderRadius: 30, alignSelf: 'center', minWidth: 240, elevation: 4 }}
+              labelStyle={{ fontSize: 18, fontWeight: 'bold', letterSpacing: 1 }}
+              contentStyle={{ paddingVertical: 18 }}
+            >
+              <Ionicons name="log-in-outline" size={26} color={theme.card} style={{ marginRight: 12 }} />
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.card, letterSpacing: 1 }}>
+                CHECK IN
+              </Text>
+            </Button>
+          )}
+          {/* Manual checkout button when checked in */}
+          {attendanceStatus && !dailyAttendanceCompleted && (
+            <View style={{ marginHorizontal: 30, marginTop: 8, marginBottom: 32 }}>
+              <Button
+                mode="contained"
+                onPress={handleManualCheckout}
+                disabled={fetchingLocation}
+                style={{ borderRadius: 30, alignSelf: 'center', minWidth: 240, elevation: 4, backgroundColor: theme.error }}
+                labelStyle={{ fontSize: 18, fontWeight: 'bold', letterSpacing: 1 }}
+                contentStyle={{ paddingVertical: 18 }}
+              >
+                <Ionicons name="log-out-outline" size={26} color={theme.card} style={{ marginRight: 12 }} />
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.card, letterSpacing: 1 }}>
+                  MANUAL CHECKOUT
+                </Text>
+              </Button>
+              <Text style={{ color: theme.textSecondary, textAlign: 'center', marginTop: 8, fontSize: 12 }}>
+                Use this if you need to check out outside your geofence
+              </Text>
+            </View>
+          )}
+          {/* Daily completion message */}
+          {dailyAttendanceCompleted && (
+            <Card style={{ borderRadius: 16, marginHorizontal: 30, marginTop: 8, marginBottom: 32, padding: 18, elevation: 3, backgroundColor: theme.success + '20' }}>
+              <View style={{ alignItems: 'center' }}>
+                <Ionicons name="checkmark-circle" size={48} color={theme.success} style={{ marginBottom: 12 }} />
+                <Text style={{ color: theme.success, fontSize: 18, fontWeight: 'bold', textAlign: 'center', marginBottom: 4 }}>
+                  Daily Attendance Complete
+                </Text>
+                <Text style={{ color: theme.textSecondary, textAlign: 'center', fontSize: 14 }}>
+                  You have completed your check-in and check-out for today.
                 </Text>
               </View>
-            )}
-          </View>
-        </View>
-      </ScrollView>
-    </View>
-  );
+            </Card>
+          )}
+          {/* Show debug reason if check-in button is not available */}
+          {!insideAnyGeofence || attendanceStatus || dailyAttendanceCompleted || !userGeofences.length || !location ? (
+            <Text style={{ color: theme.error, textAlign: 'center', marginBottom: 16, marginTop: -16 }}>
+              {checkinReason}
+            </Text>
+          ) : null}
+        </ScrollView>
+        {/* Floating refresh FAB */}
+        <FAB
+          icon="refresh"
+          onPress={refreshLocation}
+          loading={fetchingLocation}
+          style={{ position: 'absolute', bottom: 30, right: 30, backgroundColor: theme.primary, elevation: 6 }}
+          color={theme.card}
+          accessibilityLabel="Refresh Location"
+        />
+        {/* Snackbar for auto check-out or errors */}
+        <Snackbar
+          visible={snackbar.visible}
+          onDismiss={() => setSnackbar({ ...snackbar, visible: false })}
+          duration={3000}
+          style={{ backgroundColor: snackbar.error ? theme.error : theme.primary }}
+        >
+          {snackbar.message}
+        </Snackbar>
+      </View>
+    );
+  }
 };
 
 const styles = StyleSheet.create({
@@ -1307,6 +1437,13 @@ const styles = StyleSheet.create({
   infoCards: {
     paddingHorizontal: 4,
     paddingBottom: 20,
+  },
+  fab: {
+    position: 'absolute',
+    right: 24,
+    bottom: 32,
+    backgroundColor: '#2563eb',
+    elevation: 6,
   },
 });
 

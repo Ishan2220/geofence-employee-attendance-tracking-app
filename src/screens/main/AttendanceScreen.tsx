@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from '@react-navigation/native';
+import { Card, Avatar, Divider, Text as PaperText, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
 
 const { width } = Dimensions.get('window');
 
@@ -317,132 +318,144 @@ const AttendanceScreen = () => {
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
       <LinearGradient
-        colors={isDark ? ['#1E40AF', '#1E3A8A'] : ['#3B82F6', '#2563EB']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.header}
+        colors={[theme.primary, theme.primaryLight]}
+        style={{ paddingTop: 70, paddingBottom: 36, alignItems: 'center', borderBottomLeftRadius: 32, borderBottomRightRadius: 32, marginBottom: 8 }}
       >
-        <Text style={styles.title}>Attendance Records</Text>
-        {user?.role === 'admin' ? (
-          <Text style={styles.subtitle}>All Employees</Text>
-        ) : (
-          <Text style={styles.subtitle}>{user?.name}</Text>
-        )}
+        <Avatar.Icon size={64} icon="calendar-month" color="#fff" style={{ backgroundColor: theme.primary, marginBottom: 10 }} />
+        <PaperText variant="headlineMedium" style={{ color: '#fff', fontWeight: 'bold', marginBottom: 2 }}>Attendance Records</PaperText>
+        <PaperText variant="titleSmall" style={{ color: '#fff', opacity: 0.8, marginBottom: 2 }}>{user?.role === 'admin' ? 'All Employees' : user?.name}</PaperText>
       </LinearGradient>
-
-      {/* Department Filter - only for admin */}
-      {user?.role === 'admin' && (
-        <View style={styles.deptFilterWrapper}>
-          <Text style={[styles.filterLabel, { color: theme.textSecondary }]}>Department:</Text>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false} 
-            contentContainerStyle={styles.deptFilterScroll}
-          >
-            {departments.map((dept, index) => (
-              <TouchableOpacity
-                key={`dept-${index}`}
-                style={[
-                  styles.deptChip,
-                  { backgroundColor: theme.card, shadowColor: theme.shadowColor },
-                  selectedDept === dept && [styles.activeDeptChip, { backgroundColor: theme.primary }]
-                ]}
-                onPress={() => setSelectedDept(dept)}
-                activeOpacity={0.7}
-              >
-                <Text 
-                  style={[
-                    styles.deptChipText,
-                    { color: theme.text },
-                    selectedDept === dept && [styles.activeDeptChipText, { color: '#fff' }]
-                  ]}
+      <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 18 }}>
+        {/* Stats Card */}
+        <Card style={{ borderRadius: 18, padding: 18, backgroundColor: theme.card, elevation: 4, marginBottom: 18 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+            <View style={{ alignItems: 'center', flex: 1 }}>
+              <Avatar.Icon size={36} icon="calendar-check" color="#fff" style={{ backgroundColor: theme.primary, marginBottom: 4 }} />
+              <PaperText variant="headlineSmall" style={{ color: theme.primary, fontWeight: 'bold' }}>{stats.total}</PaperText>
+              <PaperText variant="labelSmall" style={{ color: theme.textSecondary }}>Total Records</PaperText>
+            </View>
+            <View style={{ alignItems: 'center', flex: 1 }}>
+              <Avatar.Icon size={36} icon="clock-outline" color="#fff" style={{ backgroundColor: theme.success, marginBottom: 4 }} />
+              <PaperText variant="headlineSmall" style={{ color: theme.success, fontWeight: 'bold' }}>{stats.avgHours}</PaperText>
+              <PaperText variant="labelSmall" style={{ color: theme.textSecondary }}>Avg Hours</PaperText>
+            </View>
+          </View>
+        </Card>
+        {/* Filter Chips Card */}
+        <Card style={{ borderRadius: 18, padding: 12, backgroundColor: theme.card, elevation: 2, marginBottom: 18 }}>
+          {user?.role === 'admin' && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+              {departments.map((dept, index) => (
+                <TouchableOpacity
+                  key={`dept-${index}`}
+                  style={{
+                    backgroundColor: selectedDept === dept ? theme.primary : theme.background,
+                    borderRadius: 20,
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    marginRight: 8,
+                    borderWidth: selectedDept === dept ? 0 : 1,
+                    borderColor: theme.primary,
+                  }}
+                  onPress={() => setSelectedDept(dept)}
+                  activeOpacity={0.8}
                 >
-                  {dept}
-                </Text>
+                  <PaperText style={{ color: selectedDept === dept ? '#fff' : theme.primary, fontWeight: 'bold' }}>{dept}</PaperText>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+            {FILTERS.map(f => (
+              <TouchableOpacity
+                key={f.value}
+                style={{
+                  flex: 1,
+                  backgroundColor: filter === f.value ? theme.primary : theme.background,
+                  borderRadius: 12,
+                  paddingVertical: 10,
+                  marginHorizontal: 4,
+                  alignItems: 'center',
+                  borderWidth: filter === f.value ? 0 : 1,
+                  borderColor: theme.primary,
+                }}
+                onPress={() => setFilter(f.value as any)}
+                activeOpacity={0.8}
+              >
+                <PaperText style={{ color: filter === f.value ? '#fff' : theme.primary, fontWeight: 'bold' }}>{f.label}</PaperText>
               </TouchableOpacity>
             ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Stats Cards */}
-      <View style={styles.statsContainer}>
-        <View style={styles.statsRow}>
-          <View style={[styles.statCard, { backgroundColor: theme.card, shadowColor: theme.shadowColor }]}>
-            <LinearGradient
-              colors={isDark ? 
-                ['rgba(59, 130, 246, 0.2)', 'rgba(59, 130, 246, 0.05)'] : 
-                ['rgba(59, 130, 246, 0.1)', 'rgba(59, 130, 246, 0.05)']}
-              style={styles.statCardGradient}
-            >
-              <MaterialCommunityIcons name="calendar-check" size={20} color={theme.primary} />
-              <Text style={[styles.statValue, { color: theme.primary }]}>{stats.total}</Text>
-              <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Records</Text>
-            </LinearGradient>
           </View>
-          
-          <View style={[styles.statCard, { backgroundColor: theme.card, shadowColor: theme.shadowColor }]}>
-            <LinearGradient
-              colors={isDark ? 
-                ['rgba(16, 185, 129, 0.2)', 'rgba(16, 185, 129, 0.05)'] : 
-                ['rgba(16, 185, 129, 0.1)', 'rgba(16, 185, 129, 0.05)']}
-              style={styles.statCardGradient}
-            >
-              <MaterialCommunityIcons name="clock-outline" size={20} color={theme.success} />
-              <Text style={[styles.statValue, { color: theme.success }]}>{stats.avgHours}</Text>
-              <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Avg Hours</Text>
-            </LinearGradient>
-          </View>
-        </View>
-      </View>
-
-      {/* Filter Chips */}
-      <View style={styles.filterContainer}>
-        {renderFilterChips()}
-      </View>
-
-      {/* Attendance List */}
-      <View style={styles.content}>
-        <View style={styles.listHeader}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>Attendance History</Text>
-        </View>
-        
-        {loading ? (
-          <ActivityIndicator size="large" color={theme.primary} />
-        ) : filteredHistory.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="calendar" size={48} color={theme.textSecondary} />
-            <Text style={[styles.emptyText, { color: theme.text }]}>No Records Found</Text>
-            <Text style={[styles.emptySubtext, { color: theme.textSecondary }]}>
-              {filter !== 'all' 
-                ? 'Try changing your filter settings'
-                : user?.role === 'admin' && selectedDept !== 'All'
-                  ? 'No records for this department'
-                  : 'Check-ins will appear here'
-              }
-            </Text>
-          </View>
-        ) : (
-          <FlatList
-            data={filteredHistory}
-            renderItem={renderAttendanceItem}
-            keyExtractor={(item, index) => `attendance-${index}`}
-            contentContainerStyle={[styles.flatlistContent, { paddingHorizontal: 16 }]}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl 
-                refreshing={refreshing} 
-                onRefresh={onRefresh} 
-                colors={[theme.primary]}
-                tintColor={theme.primary}
-                progressBackgroundColor={theme.card}
-              />
-            }
+        </Card>
+        {/* Attendance List */}
+        <Card style={{ borderRadius: 18, padding: 0, backgroundColor: theme.card, elevation: 4, marginBottom: 18 }}>
+          <Card.Title
+            title="Attendance History"
+            titleStyle={{ color: theme.text, fontWeight: 'bold', fontSize: 18 }}
+            left={props => <Avatar.Icon {...props} icon="clipboard-list-outline" color={theme.primary} style={{ backgroundColor: theme.background }} />}
           />
-        )}
-      </View>
+          <Divider style={{ marginBottom: 8 }} />
+          {loading ? (
+            <PaperActivityIndicator size="large" color={theme.primary} style={{ marginVertical: 32 }} />
+          ) : filteredHistory.length === 0 ? (
+            <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+              <Avatar.Icon size={48} icon="calendar" color={theme.textSecondary} style={{ backgroundColor: theme.background, marginBottom: 8 }} />
+              <PaperText variant="titleMedium" style={{ color: theme.text, marginBottom: 4 }}>No Records Found</PaperText>
+              <PaperText variant="bodySmall" style={{ color: theme.textSecondary }}>
+                {filter !== 'all'
+                  ? 'Try changing your filter settings'
+                  : user?.role === 'admin' && selectedDept !== 'All'
+                    ? 'No records for this department'
+                    : 'Check-ins will appear here'}
+              </PaperText>
+            </View>
+          ) : (
+            filteredHistory.map((item, idx) => (
+              <View key={idx}>
+                <Card style={{ marginHorizontal: 12, marginVertical: 8, borderRadius: 14, backgroundColor: theme.background, elevation: 2 }}>
+                  <Card.Content>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                      <Avatar.Icon size={32} icon="calendar-check" color="#fff" style={{ backgroundColor: theme.primary, marginRight: 10 }} />
+                      <PaperText style={{ fontWeight: 'bold', color: theme.text, fontSize: 16 }}>{new Date(item.checkInTime || item.date || 0).toLocaleDateString()}</PaperText>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Avatar.Icon size={24} icon="login" color={theme.primary} style={{ backgroundColor: theme.background, marginRight: 6 }} />
+                        <PaperText style={{ color: theme.textSecondary, fontWeight: 'bold' }}>Check In:</PaperText>
+                        <PaperText style={{ color: theme.text, marginLeft: 4 }}>{new Date(item.checkInTime || item.date || 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</PaperText>
+                      </View>
+                      {item.checkOutTime && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Avatar.Icon size={24} icon="logout" color={theme.success} style={{ backgroundColor: theme.background, marginRight: 6 }} />
+                          <PaperText style={{ color: theme.textSecondary, fontWeight: 'bold' }}>Check Out:</PaperText>
+                          <PaperText style={{ color: theme.text, marginLeft: 4 }}>{new Date(item.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</PaperText>
+                        </View>
+                      )}
+                    </View>
+                    {item.totalHours !== undefined && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                        <Avatar.Icon size={20} icon="clock-outline" color={theme.success} style={{ backgroundColor: theme.background, marginRight: 6 }} />
+                        <PaperText style={{ color: theme.textSecondary, fontWeight: 'bold' }}>Hours:</PaperText>
+                        <PaperText style={{ color: theme.success, marginLeft: 4 }}>{item.totalHours}</PaperText>
+                      </View>
+                    )}
+                    {user?.role === 'admin' && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
+                        <Avatar.Icon size={20} icon="account" color={theme.primary} style={{ backgroundColor: theme.background, marginRight: 6 }} />
+                        <PaperText style={{ color: theme.text, fontWeight: 'bold' }}>{item.name || 'Unknown'}</PaperText>
+                        <PaperText style={{ color: theme.textSecondary, marginLeft: 8 }}>{item.department || 'No Department'}</PaperText>
+                      </View>
+                    )}
+                  </Card.Content>
+                </Card>
+                {idx !== filteredHistory.length - 1 && <Divider style={{ marginVertical: 2, marginHorizontal: 24 }} />}
+              </View>
+            ))
+          )}
+        </Card>
+      </ScrollView>
     </View>
   );
 };

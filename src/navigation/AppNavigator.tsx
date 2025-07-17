@@ -13,6 +13,8 @@ import HomeScreen from '../screens/main/HomeScreen';
 import AttendanceScreen from '../screens/main/AttendanceScreen';
 import ProfileScreen from '../screens/main/ProfileScreen';
 import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
+import ManageGeofencesScreen from '../screens/admin/ManageGeofencesScreen';
+import ManageAdminRequestsScreen from '../screens/admin/ManageAdminRequestsScreen';
 
 // Define types for our navigation stacks
 export type RootStackParamList = {
@@ -20,6 +22,8 @@ export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
   AdminDashboard: undefined;
+  ManageGeofences: undefined;
+  ManageAdminRequests: undefined;
 };
 
 export type TabStackParamList = {
@@ -92,6 +96,8 @@ const AppNavigator = () => {
         <>
           <Stack.Screen name="MainApp" component={MainTabs} />
           <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
+          <Stack.Screen name="ManageGeofences" component={ManageGeofencesScreen} />
+          <Stack.Screen name="ManageAdminRequests" component={ManageAdminRequestsScreen} />
         </>
       ) : (
         // Unauthenticated screens
