@@ -35,5 +35,5 @@ Scalability for organizations with multiple locations
 Perfect for companies looking to digitize and streamline their attendance processes while maintaining employee trust and operational excellence.
 
 What challenges are you facing with attendance management in your organization? Would love to hear your thoughts!
-
+@Ishan2220
 #AttendanceManagement #MobileApp #ReactNative #Geofencing #TechInnovation #EmployeeTracking #AppDevelopment #TypeScript #GoogleMaps #WorkforceManagement
